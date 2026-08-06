@@ -1,4 +1,5 @@
 #include "global.h"
+#include "main.h"
 
 
 #define HYSTERESIS_100_MV         100
@@ -8,14 +9,21 @@
 #define HYSTERESIS_500_MV         500
 #define HYSTERESIS_VALUE          HYSTERESIS_100_MV
 
+#define ADC_SUPPLY_MV             3300
+
 #define MAX_VOLTAGE_PR_THRESHOLD  3300
-#define MAX_VOLTAGE_PR_VALUE      2500
+#define MAX_VOLTAGE_PR_VALUE      2000
+
+#define OPA_COEFF_NUMERATOR       4
+#define OPA_COEFF_DENOMINATOR     10
 
 
 AnalogIn pressureThresholdIn(PA_6);
 AnalogIn pressureIn(PA_7);
-DigitalOut relay1Coil(PA_11);//RELAY_1_COIL_UC_3V3
+DigitalOut relay1Coil(PA_11);                           //RELAY_1_COIL_UC_3V3
 RCCtrl rcctrl;
+THRESHOLD threshold(&pressureThresholdIn, 0, 5000, HYSTERESIS_VALUE);
+
 
 //#################### Serial debug ############################
 static UnbufferedSerial serial_port(PC_10, PC_11, 921600);
@@ -32,25 +40,7 @@ FileHandle *mbed::mbed_override_console(int fd)
 
 uint16_t convertReadU16ToMv(uint16_t inVal)
 {
-  return ((inVal * MAX_VOLTAGE_PR_THRESHOLD) / UINT16_MAX);
-}
-
-
-uint16_t getEnableThresholdInMv()
-{
-  uint16_t thresholdMv = convertReadU16ToMv(pressureThresholdIn.read_u16());
-  return ((thresholdMv * MAX_VOLTAGE_PR_VALUE) / MAX_VOLTAGE_PR_THRESHOLD);
-}
-
-
-uint16_t getDisableThresholdInMv(uint16_t pressureEnTh)
-{
-  uint16_t pressureDisTh = 0;
-  if(pressureEnTh > HYSTERESIS_VALUE)
-  {
-    pressureDisTh = pressureEnTh - HYSTERESIS_VALUE;
-  }
-  return pressureDisTh;
+  return ((inVal * ADC_SUPPLY_MV) / UINT16_MAX);
 }
 
 
@@ -58,9 +48,7 @@ int main()
 {
   const char time[] = __TIME__;
   const char date[] = __DATE__;
-  uint16_t pressureEnableThreshold = 0;
-  uint16_t pressureDisableThreshold = 0;
-  uint16_t pressureValue = 0;
+  uint16_t pressureAdcVoltage = 0;
   uint32_t relayEnabled = 0;
 
   printf("\r\n*****************************************************************\r\n");
@@ -76,13 +64,14 @@ int main()
 
   while (true) 
   {
-    pressureEnableThreshold = getEnableThresholdInMv();
-    pressureDisableThreshold = getDisableThresholdInMv(pressureEnableThreshold);
-    pressureValue = convertReadU16ToMv(pressureIn.read_u16());
+    pressureAdcVoltage = convertReadU16ToMv(pressureIn.read_u16());
+    uint32_t pressureOpaInVoltage = (pressureAdcVoltage * OPA_COEFF_DENOMINATOR) / OPA_COEFF_NUMERATOR;
+    
+    threshold.cyclicHandling();
 
     if(relayEnabled)
     {
-      if(pressureValue <= pressureDisableThreshold)
+      if(pressureOpaInVoltage <= threshold.disable)
       {
         relayEnabled = 0;
         relay1Coil.write(relayEnabled);
@@ -90,7 +79,7 @@ int main()
     }
     else
     {
-      if(pressureValue > pressureEnableThreshold)
+      if(pressureOpaInVoltage > threshold.enable)
       {
         relayEnabled = 1;
       }
@@ -100,7 +89,8 @@ int main()
       }
       relay1Coil.write(relayEnabled);
     }
-    printf("Pressure Input: %umV,  ON: %umV, OFF: %umV\r\n", pressureValue, pressureEnableThreshold, pressureDisableThreshold);
+    
+    printf("ADC_IN: %5umV, OPA_IN: %5lumV, ON: %5umV, OFF: %5umV\r\n", pressureAdcVoltage, pressureOpaInVoltage, threshold.enable, threshold.disable);
     ThisThread::sleep_for(100ms);
   }
 }
